@@ -1,0 +1,510 @@
+#!/bin/sh
+POSIXLY_CORRECT=yes
+
+
+# odstraní všechny prázdné řádky ze vstupních souborů
+removeEmptyLines(){
+    FILE_CONTENT=$(echo "$1" | tr -d " \t" | grep '\S')
+}
+
+# odstraní bíle znaky ze vstupních souborů (kromě znaku nového řádku)
+removeWhitespace(){
+    FILE_CONTENT=$(echo "$1" | tr -d " \t")
+}
+
+# tiskne záznamy s nevalidním datumem na STDERR a ve vstupu ponechává pouze řádky s validním datem
+filterInvalidDate(){
+    FILE_CONTENT=$(echo "$1" | awk -F , '{if(a[$2] == "")
+                                            if ($2 !~ /[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/ && $2 != "") {print "Invalid date: " $0 > "/dev/stderr"}
+                                            else
+                                        {if(system("date -d "$2" +%Y-%m-%d 2>/dev/null 1>/dev/null") && $2 != "")
+                                        {print "Invalid date: " $0 > "/dev/stderr"}
+                                         else print $0; a[$2] = 1;} else print $0}')
+}
+
+# tiskne záznamy s nevalidním věkem na STDERR a ve vstupu ponechává pouze řádky s validním věkem
+filterInvalidAge(){
+    FILE_CONTENT=$(echo "$1" | awk -F , '{if($3 !~ /^[0-9]*$/) {print "Invalid age: " $0 > "/dev/stderr"} else print $0}')
+}
+
+# tiskne na STDERR všechny záznamy, jejichž kódy okresů nejsou namapovány v souboru DISTRICTS_FILE (použito pouze s přepínačem -d)
+filterMissingDistricts(){
+    FILE_CONTENT=$(echo "$FILE_CONTENT" | awk -F , '{if ($6 ~ /^CZ[0-9]*$/) printf "Invalid value: " $0 > "/dev/stderr"; else print $0}')
+}
+
+# tiskne na STDERR všechny záznamy, jejichž kódy krajů nejsou namapovány v souboru REGIONS_FILE (použito pouze s přepínačem -r)
+filterMissingRegions(){
+    FILE_CONTENT=$(echo "$FILE_CONTENT" | awk -F , '{if ($5 ~ /^CZ[0-9]*$/) printf "Invalid value: " $0 > "/dev/stderr"; else print $0}')
+}
+
+# spočítá počet záznamů
+infected(){
+    FILE_CONTENT=$(echo "$FILE_CONTENT" | awk -F , 'BEGIN {c = 0} {if(NF > 1) {c++}} END{print c}')
+}
+
+# získá statistiku nakažených podle pohlaví
+gender(){
+    FILE_CONTENT=$(echo "$1" | awk -F , '{print $4}' | grep -c -x "M" | sed 's/^/M: /')
+    FILE_CONTENT=$FILE_CONTENT$(echo "$1" | awk -F , '{print $4}' | grep -c -x "Z" | sed 's/^/\nZ: /')
+    FILE_CONTENT=$FILE_CONTENT$(echo "$1" | awk -F , '{if($4 == "" && NF > 1) print "None"}' | grep -c "None" | sed 's/^/\nNone: /' | awk -F ": " '{if($2 != 0) print $0;}')
+    implicitHistogramValue=100000
+}
+
+
+# získá statistiku nakažených podle věku
+age(){
+    FILE_CONTENT=$(echo "$1"| awk -F , 'BEGIN {a["0 0-5   "] = 0;
+                                             a["0 6-15  "] = 0;
+                                             a["1 16-25 "] = 0;
+                                             a["1 26-35 "] = 0;
+                                             a["1 36-45 "] = 0;
+                                             a["1 46-55 "] = 0;
+                                             a["1 56-65 "] = 0;
+                                             a["1 66-75 "] = 0;
+                                             a["1 76-85 "] = 0;
+                                             a["1 86-95 "] = 0;
+                                             a["1 96-105"] = 0; 
+                                             a["X >105  "] = 0;} 
+                        {if($3 >= 0 && $3 <= 5) a["0 0-5   "]++;
+                        if($3 == "" && NF > 1) a["Y None  "]++;
+                        if($3 >= 6 && $3 <= 15) a["0 6-15  "]++; 
+                        if($3 >= 16 && $3 <= 25) a["1 16-25 "]++; 
+                        if($3 >= 26 && $3 <= 35) a["1 26-35 "]++;
+                        if($3 >= 36 && $3 <= 45) a["1 36-45 "]++;
+                        if($3 >= 46 && $3 <= 55) a["1 46-55 "]++;
+                        if($3 >= 56 && $3 <= 65) a["1 56-65 "]++;
+                        if($3 >= 66 && $3 <= 75) a["1 66-75 "]++;
+                        if($3 >= 76 && $3 <= 85) a["1 76-85 "]++;
+                        if($3 >= 86 && $3 <= 95) a["1 86-95 "]++;
+                        if($3 >= 96 && $3 <= 105) a["1 96-105"]++;
+                        if($3 >= 106) a["X >105  "]++;}
+                        END {for(i in a) if(i != "") print i ": " a[i];}' | sort | cut -c3-)
+    implicitHistogramValue=10000
+}
+
+
+# získá statistiku nakažených podle jednotlivých dnů
+daily(){
+    if [ "$FILE_CONTENT" != "" ]
+    then
+        FILE_CONTENT=$(echo "$1"| awk -F , '{if(NF > 1) a[$2]++;} END {for(i in a) if(i != "") print i ": " a[i]; else print "None: " a[i];}' | sort)
+        implicitHistogramValue=500
+    fi
+}
+
+# získá statistiku nakažených podle jednotlivých měsíců
+monthly(){
+    if [ "$FILE_CONTENT" != "" ]
+    then
+        FILE_CONTENT=$(echo "$1" | awk -F , '{if(NF > 1) print $2}' | sed 's/.\{3\}$//' | awk -F , '{a[$1]++;} END {for(i in a) if(i != "") print i ": " a[i]; else print "None: " a[i];}' | sort)
+        implicitHistogramValue=10000
+    fi
+}
+
+# získá statistiku nakažených podle jednotlivých let
+yearly(){
+    if [ "$FILE_CONTENT" != "" ]
+    then
+        FILE_CONTENT=$(echo "$1" | awk -F , '{if(NF > 1) print $2}' | sed 's/.\{6\}$//' | awk -F , '{a[$1]++;} END {for(i in a) if(i != "") print i ": " a[i]; else print "None: " a[i];}' | sort)
+        implicitHistogramValue=100000
+    fi
+}
+
+# získá statistiku nakažených podle zemí nákazy
+countries(){
+    if [ "$FILE_CONTENT" != "" ]
+    then    
+        FILE_CONTENT=$(echo "$1" | awk -F , '{if ($8 != "CZ" && $8 != "") print $8}' | awk -F , '{a[$1]++;} END {for(i in a) print i ": " a[i];}' | sort)
+        implicitHistogramValue=100
+    fi
+}
+
+# získá statistiku nakažených podle okresů
+districts(){
+    if [ "$FILE_CONTENT" != "" ]
+    then
+        if [ "$districtsFile" = "" ]
+        then
+            FILE_CONTENT=$(echo "$1" | awk -F , '{if(NF > 1) print $6}' | awk -F , '{a[$1]++;} END {for(i in a) if (i != "") print i ": " a[i]; else print "None: " a[i];}' | sort)
+        else
+            districtsLongestLine=$(echo "$districtsMapping" | wc -L)
+            FILE_CONTENT=$(echo "$1" | awk -F , '{if(NF > 1) print $6}' | awk -F , -vlongestLine="$districtsLongestLine" '{a[$1]++;} END {for(i in a) 
+                                                                            if (i != "") {printf 11 i; for(k = 0; k < (longestLine-length(i)-7); k++){printf " "} printf ": "; printf a[i] "\n"} else
+                                                                                                         {printf "ZZNone"; for(p = 0; p < (longestLine-length("None ")-6);p++){printf " "} printf ": " a[i]"\n";}}' | sort | cut -c3-)
+        fi
+        implicitHistogramValue=1000
+    fi
+}
+
+# získá statistiku nakažených podle jednotlivých krajů
+regions(){
+    if [ "$FILE_CONTENT" != "" ]
+    then
+        if [ "$regionsFile" = "" ]
+        then
+            FILE_CONTENT=$(echo "$1" | awk -F , '{if(NF > 1) print $5}' | awk -F , '{a[$1]++;} END {for(i in a) if (i != "") print i ": " a[i]; else print "None: " a[i];}' | sort)
+        else
+            regionsLongestLine=$(echo "$regionsMapping" | wc -L)
+            FILE_CONTENT=$(echo "$1" | awk -F , '{if(NF > 1) print $5}' | awk -F , -vlongestLine="$regionsLongestLine" '{a[$1]++;} END {for(i in a) 
+                                                                            if (i != "") {printf 11 i; for(k = 0; k < (longestLine-length(i)-6); k++){printf " "} printf ": "; printf a[i] "\n"} else 
+                                                                                                    {printf "ZZNone"; for(p = 0; p < (longestLine-length("None ")-5); p++){printf " "} printf ": "; printf a[i]"\n";}}' | sort | cut -c3-)
+        fi
+        implicitHistogramValue=10000
+    fi
+}
+
+# ze záznamů odstraní všechny nakažené, jejichž pohlaví neodpovídá 2. argumentu
+switchGender(){
+    FILE_CONTENT=$(echo "$1" | awk -F , -vgender="$2" '{if($4 != "" && $4 == gender) print $0}')
+}
+
+# v záznamech ponechá pouze nakažené, kteří se nakazili po datu ve 2. argumentu
+switchTimeAfter(){
+    FILE_CONTENT=$(echo "$1" | awk -F , -vstart="$2" '{if($2 != "" && $2 >= start) print $0}')
+}
+
+# v záznamech ponechá pouze nakažené, kteří se nakazili před datem ve 2. argumentu
+switchTimeBefore(){
+    FILE_CONTENT=$(echo "$1" | awk -F , -vstop="$2" '{if($2 != "" && $2 <= stop) print $0}')
+}
+
+# přetvoří číselnou statistiku u vybraných příkazů na grafické zobrazení
+switchHistogram(){
+    manualHistogramValue=$2
+    highest=$(echo "$1" | awk -F ": " '{print $2}' | sort -nr | head -1)
+
+    if [ "$FILE_CONTENT" = "" ]
+    then
+        return
+    fi 
+    FILE_CONTENT=$(echo "$1" | awk -F ": " -vmanHistogramValue="$manualHistogramValue" -vimplicitHistogramValue="$implicitHistogramValue" \
+    -vhighest="$highest" 'BEGIN{if(manHistogramValue == -1) {histogramValue = implicitHistogramValue} 
+    else {histogramValue = highest/manHistogramValue}}{printf $1 ": "; for(i = 0; i < int($2 / histogramValue); i++) printf "#"; print ""}')
+}
+
+# nahradí string v 1. argumentu stringem v 2. argumentu a vymění znak * za mezeru
+replaceString(){
+    FILE_CONTENT=$(echo "$FILE_CONTENT" | sed "s/$code,/$name,/g" | sed 's/*/ /g')
+}
+
+# nahradí kódy krajů jejich názvy podle mapování v poskytnutém souboru
+replaceRegionCodes(){
+    regionsHead="\"Kod kraje\""";""\"Nazev kraje\""";""\"Zkratka nazvu kraje\""";""\"Kod NUTS3 kraje\""";""\"Nazev oblasti\""";"
+    regionsMapping=$(echo "$2" | grep -v "$regionsHead" | awk -F ";" '{gsub(" ", "*"); print $4 "=" $2}' | sed 's/"//g')
+    for line in $regionsMapping
+    do
+        code=$(echo "$line" | cut -d "=" -f1)
+        name=$(echo "$line" | cut -d "=" -f2)
+        replaceString "$code" "$name"     
+    done
+    filterMissingRegions
+}
+
+# nahradí kódy okresů jejich názvy podle mapování v poskytnutém souboru
+replaceDistrictCodes(){
+    districtsHead="\"Kod okresu\""";""\"Nazev okresu\""";""\"Zkratka nazvu okresu\""";""\"Kod NUTS4 okresu\""";""\"Nazev kraje\""";"
+    districtsMapping=$(echo "$2" | grep -v "$districtsHead" | awk -F ";" '{gsub(" ", "*"); print $4 "=" $2}' | sed 's/"//g')
+    for line in $districtsMapping
+    do
+        code=$(echo "$line" | cut -d "=" -f1)
+        name=$(echo "$line" | cut -d "=" -f2)
+        replaceString "$code" "$name"     
+    done
+    filterMissingDistricts
+
+}
+
+# ukončí script pokud nějaký zadaný soubor neexistuje
+fileDoesntExist(){
+    echo Soubor "$1" neexistuje! >/dev/stderr
+    exit 1
+}
+
+# funkce na zpracování přepínačů. nastavuje do proměnných argumenty přepínačů, které jsou pak posílány ostatním funkcím, nebo ukončuje script v případě neplatných vstupů
+handleOpts(){
+    if [ "$3" != ""  ]
+    then
+        echo Chyba: prepinac -"$1" pouzit vice nez jednou >/dev/stderr
+        exit 3
+    fi
+    if [  "$1" = "-a"  ]  ||  [  "$1" = "-b"  ] 
+    then
+        if ! expr "$2" : "^[1-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]$" 1>/dev/null;
+        then    
+            echo Za prepinacem "$1" musi byt zadano platne datum ve formatu YYYY-MM-DD ! > /dev/stderr
+            exit 2
+        fi
+        if [ ! "$(date -d "$2" +%Y-%m-%d 2>/dev/null)" ]
+            then
+                echo Za prepinacem "$1" musi byt zadano platne datum ve formatu YYYY-MM-DD ! > /dev/stderr
+                exit 2
+            else
+                if [ "$1" = -a ]
+                then
+                    timeAfterFilter="$2"
+                fi
+
+                if [ "$1" = -b ]
+                then
+                    timeBeforeFilter="$2"
+                fi
+        fi
+    fi
+
+    if [ "$1" = "-g" ]
+    then
+        if [ "$2" = M ] || [ "$2" = Z ]
+        then
+            genderFilter=$2
+        else
+            echo Za prepinacem -"$1" musi byt zadano pohlavi M nebo Z! >/dev/stderr
+            exit 2
+        fi
+    fi
+
+    if [ "$1" = "-s" ]
+    then
+        if expr "$2" : "[0-9]*" 1>/dev/null
+        then
+            manualHistogramValue="$2"
+            if [ "$manualHistogramValue" = 0 ]
+            then
+                echo Hodnota za prepinacem -s musi byt cislo vyssi nez 0 >/dev/stderr
+                exit 4
+            fi
+        else
+            manualHistogramValue=-1
+        fi
+    fi
+
+    if [ "$1" = "-d" ]
+    then
+        if test -f "$2"
+        then
+            districtsFile=$(cat < "$2")
+        else
+            fileDoesntExist "$2"
+        fi
+    fi
+
+    if [ "$1" = "-r" ]
+    then
+        if test -f "$2"
+        then
+            regionsFile=$(cat < "$2")
+        else
+            fileDoesntExist "$2"
+        fi
+    fi
+
+    if [ "$1" = "?" ]
+    then
+        echo Neexistujici prepinac: "$2". Pro napovedu pouzijte ./corona -h >/dev/stderr
+        exit 2
+    fi
+
+    
+
+    return
+}
+
+# vypíše nápovědu ke scriptu a ukončí ho.
+help(){
+    printf "Usage: ./corona [SWITCH] [COMMAND] [FILE1 [FILE2]...]\n
+V případě, že není zadán žádný vstupní soubor s daty, vstup je načten z STDIN.\n
+[SWITCH] může být kombinace následujících přepínačů:
+-h : vypíše tuto nápovědu a ukončí script\n
+-a DATETIME: ve výstupu budou pouze záznamy po datu DATETIME (včetně). DATETIME musí být platné datum ve formátu YYYY-MM-DD.\n
+-b DATETIME: ve výstupu budou pouze záznamy před datem DATETIME (včetně). DATETIME musí být platné datum ve formátu YYYY-MM-DD.\n
+-g GENDER: ve výstupu budou pouze záznamy o osobách daného pohlaví. GENDER musí být M (muži) nebo Z (ženy).\n
+-d DISTRICT_FILE: nahrazuje kód okresu jeho jménem podle mapování v souboru DISTRICT_FILE\n
+-r REGIONS_FILE: nahrazuje kód kraje jeho jménem podle mapování v souboru REGIONS_FILE\n
+-s [WIDTH]: u příkazů gender, age, daily, monthly, yearly, countries, districts a regions vypisuje data v podobě histogramů místo číselných hodnot.
+Pokud je zadán parametr WIDTH, bude mít řádek s nejvíce záznamy šířku WIDTH. Pokud parametr není
+zadán, každý znak # má implicitní hodnotu v závislosti na příkazu podle následující tabulky:\n
+\t gender   : 100 000
+\t age      : 10 000
+\t daily    : 500
+\t monthly  : 10 000
+\t yearly   : 100 000
+\t countries: 100
+\t districts: 1 000
+\t regions  : 10 000\n
+[COMMAND] může být jeden z následujících:
+infected : spočítá počet nakažených
+merge    : sloučí několik souborů do jednoho. Implicitní příkaz v případě, že není žádný jiný zadán.
+gender   : vypíše počet nakažených pro jednotlivá pohlaví.
+age      : vypíše statistiku nakažených podle věku.
+daily    : vypíše statistiku nakažených pro jednotlivé dny.
+monthly  : vypíše statistiku nakažených pro jednotlivé měsíce.
+yearly   : vypíše statistiku nakažených pro jednotlivé roky.
+countries: vypíše statistiku nakažených pro jednotlivé země.
+districts: vypíše statistiku nakažených pro jednotlivé okresy.
+regions  : vypíše statistiku nakažených pro jednotlivé kraje.
+"
+    exit 0
+}
+
+# získá vstup z STDIN
+getInputFromStdin(){
+    FILE_CONTENT=$(cat)
+}
+
+# získá vstup ze souboru, pokud existuje
+getInputFromFile(){
+    if ! test -f "$1"
+    then
+        fileDoesntExist "$1"
+    fi
+
+    if  expr "$1" : ".*\.gz" 1>/dev/null
+    then
+        FILE_CONTENT=$FILE_CONTENT"\n"$(gzip -d -c "$1" | cat ) 
+        return
+    fi
+    if expr "$1" : ".*\.bz2" 1>/dev/null
+    then
+        FILE_CONTENT=$FILE_CONTENT"\n"$(bzip2 -d -c "$1" | cat)
+        return
+    fi
+
+    FILE_CONTENT=$FILE_CONTENT"\n"$(cat < "$1")
+}
+
+# spustí příkaz v proměnné COMMAND
+executeCommand(){
+    if [ "$COMMAND" != "" ] 
+    then
+        $COMMAND "$FILE_CONTENT"
+    fi
+}
+
+# pokud byly zadány přepínače, které filtrují některé záznamy, aplikuje tyto filtry
+applyFilters(){
+    if [ "$timeBeforeFilter" != "" ]
+    then
+        switchTimeBefore "$FILE_CONTENT" "$timeBeforeFilter"
+    fi
+
+    if [ "$timeAfterFilter" != "" ]
+    then
+        switchTimeAfter "$FILE_CONTENT" "$timeAfterFilter"
+    fi
+
+    if [ "$genderFilter" != "" ]
+    then
+        switchGender "$FILE_CONTENT" "$genderFilter"
+    fi
+}
+
+# implicitní příkaz který se provede v případě, že není žádný jiný zadán (sloučení vstupních souborů do jednoho výstupu)
+noCommand(){
+    echo "$head"
+    if [ "$FILE_CONTENT" != "" ]
+    then
+        echo "$FILE_CONTENT"
+    fi
+    exit 0
+}
+
+# zpracování přepínačů
+while true
+do
+    case "$1" in
+        -s) handleOpts "$1" "$2" "$manualHistogramValue";
+            if expr "$2" : "[0-9]*" 1>/dev/null 2>/dev/null
+            then
+                shift 2
+            else
+                shift 1
+            fi 
+            ;;
+        -a) handleOpts "$1" "$2" "$timeAfterFilter"
+             shift 2 ;; 
+        -b) handleOpts "$1" "$2" "$timeBeforeFilter"
+             shift 2 ;;
+        -g) handleOpts "$1" "$2" "$genderFilter"
+            shift 2;;
+        -d) handleOpts "$1" "$2"
+            shift 2 ;;
+        -r) handleOpts "$1" "$2"
+            shift 2 ;;
+        -h) help ;;
+        -*) handleOpts "?" "$1" ;;
+        *) break
+    esac
+done
+
+# získání příkazu
+case "$1" in
+    "infected") COMMAND=infected 
+                shift 1;;
+    "merge") COMMAND=noCommand
+                shift 1;;
+    "gender") COMMAND=gender
+                shift 1;;
+    "age") COMMAND=age
+                shift 1 ;;
+    "daily") COMMAND=daily
+                shift 1 ;;
+    "monthly") COMMAND=monthly
+                shift 1 ;;
+    "yearly") COMMAND=yearly
+                shift 1 ;;
+    "countries") COMMAND=countries
+                shift 1 ;;
+    "districts") COMMAND=districts
+                shift 1 ;;
+    "regions") COMMAND=regions
+                shift 1 ;;
+    "") getInputFromStdin
+        COMMAND=noCommand ;;
+    *)  getInputFromFile "$1"
+        shift 1
+        COMMAND=noCommand
+esac
+
+# projde argumenty za přepínači a příkazem a pokusí se načíst data ze souborů, daných těmito argumenty
+for arg in "$@"
+do
+    getInputFromFile "$arg"
+done
+
+# pokud žádná data nepřišla ze souborů, použije se vstup ze STDIN
+if [ "$FILE_CONTENT" = "" ]
+then
+    getInputFromStdin
+fi
+
+# validace dat, aplikování filtrů, zavolání příkazů a nakonec vypsání výsledku a ukončení scriptu.
+removeEmptyLines "$FILE_CONTENT"
+removeWhitespace "$FILE_CONTENT"
+head="id,datum,vek,pohlavi,kraj_nuts_kod,okres_lau_kod,nakaza_v_zahranici,nakaza_zeme_csu_kod,reportovano_khs"
+FILE_CONTENT=$(echo "$FILE_CONTENT" | grep -v "$head")
+filterInvalidAge "$FILE_CONTENT"
+filterInvalidDate "$FILE_CONTENT"
+
+if [ "$districtsFile" != "" ]
+then
+    replaceDistrictCodes "$FILE_CONTENT" "$districtsFile"
+fi
+
+if [ "$regionsFile" != "" ]
+then
+    replaceRegionCodes "$FILE_CONTENT" "$regionsFile"
+fi
+
+applyFilters
+executeCommand
+
+if [ "$manualHistogramValue" != "" ]
+then
+    if [ "$COMMAND" = gender ] || [ "$COMMAND" = age ] || [ "$COMMAND" = daily ] || [ "$COMMAND" = monthly ] \
+    || [ "$COMMAND" = yearly ] || [ "$COMMAND" = countries ] || [ "$COMMAND" = districts ] || [ "$COMMAND" = regions ]
+    then
+        switchHistogram "$FILE_CONTENT" "$manualHistogramValue"
+    fi
+fi
+
+echo "$FILE_CONTENT"
+exit 0
