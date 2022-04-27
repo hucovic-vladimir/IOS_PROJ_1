@@ -1,3 +1,5 @@
+Score: 16.4 (capped at 15)
+
 # corona
 A shell script for applying various filters on CSV files containing records of COVID infections
 
